@@ -4,43 +4,81 @@
   gather_facts: no
   vars:
     instance_type: t3.xlarge
-    ami_id: ami-0323c3dd2da7fb37d # CentOS 7 x86_64
+    vpc_id: <vpc id>
+    ami_id: ami-05a36e1502605b4aa # CentOS 7 x86_64
+    subnet_id: <subnet id>
     region: us-east-2
     key_name: my_key_pair
-    security_group: my_security_group
-    count: 6
+    security_group: <sg id>
+    count: 4
 
   tasks:
     - name: Launch EC2 instances
       ec2:
         region: "{{ region }}"
+        assign_public_ip: yes
+        vpc_subnet_id: "{{ subnet_id }}"
         key_name: "{{ key_name }}"
-        group: "{{ security_group }}"
+        group_id: "{{ security_group }}"
         instance_type: "{{ instance_type }}"
         image: "{{ ami_id }}"
         wait: yes
-        count: "{{ count }}"
+        count: "1"
         instance_tags:
-          Name: "CentOS 7 Instance {{ count.index + 1 }}"
+          Name: "kube-{{ item }}"
       register: ec2_instances
-      provider:
-        access_key: "{{ ansible_env.AWS_ACCESS_KEY_ID }}"
-        secret_key: "{{ ansible_env.AWS_SECRET_ACCESS_KEY }}"
+      loop: "{{ range(1, count+1) | list }}"
+      loop_control:
+        index_var: item_index
+
+#    - debug:
+#       var: ec2_instances
+
 
     - name: Add instances to host group
       add_host:
-        name: "{{ item.public_ip }}"
+        name: "{{ item.instances.0.public_ip }}"
+        ansible_host: "{{ item.instances.0.public_ip }}"
+        ansible_ssh_private_key_file: "./local_stuff/my_key_pair.pem"
         groups: ec2
-      with_items: "{{ ec2_instances.instances }}"
+      with_items:
+        - "{{ ec2_instances.results }}"
+
+    - name: Add instances to host group control-plane
+      add_host:
+        name: "{{ item.instances.0.public_ip }}"
+        ansible_host: "{{ item.instances.0.public_ip }}"
+        ansible_ssh_private_key_file: "./local_stuff/my_key_pair.pem"
+        groups: control_plane
+      when: item.instances.0.tags.Name == "kube-1"
+      with_items:
+        - "{{ ec2_instances.results }}"
+
+    - name: Add instances to host group workers
+      add_host:
+        name: "{{ item.instances.0.public_ip }}"
+        ansible_host: "{{ item.instances.0.public_ip }}"
+        ansible_ssh_private_key_file: "./local_stuff/my_key_pair.pem"
+        groups: workers
+      when: item.instances.0.tags.Name == "kube-2" or item.instances.0.tags.Name == "kube-3" or item.instances.0.tags.Name == "kube-4"
+      with_items:
+        - "{{ ec2_instances.results }}"
+
+
+    - name: Wait for SSH
+      wait_for: host="{{ item.instances[0].public_ip }}" port=22 delay=10  timeout=300
+      with_items: "{{ ec2_instances.results }}"
 
 - name: Configure CentOS 7 instances
   hosts: ec2
   remote_user: centos
-  gather_facts: yes
+  gather_facts: no
   become: yes
   become_method: sudo
 
   tasks:
+
+
     - name: Install required packages
       yum:
         name:
@@ -48,25 +86,23 @@
           - python3-pip
         state: present
 
-    - name: Install AWS CLI
-      pip:
-        name: awscli
+#    - name: Update packages
+#      yum:
+#       name: "*"
+#       state: latest
 
     - name: Set timezone to UTC
       timezone:
         name: UTC
 
-    - name: Disable SELinux
-      selinux:
-        state: disabled
-
-    - name: Disable firewall
-      service:
-        name: firewalld
-        state: stopped
-        enabled: no
-
-    - name: Update system packages
-      yum:
-        name: '*'
-        state: latest
+- name: Install Kubernetes and Calico on CentOS 7
+  hosts: ec2
+  remote_user: centos
+  become: yes
+  become_method: sudo
+  vars:
+    k8s_version: 1.21.5
+    control_plane_count: 1
+    worker_count: 3
+  roles:
+    - kubernetes
