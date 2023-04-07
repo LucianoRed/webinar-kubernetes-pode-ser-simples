@@ -15,7 +15,7 @@
       ec2:
         region: "{{ region }}"
         key_name: "{{ key_name }}"
-        group_id: "{{ security_group }}"
+        group: "{{ security_group }}"
         instance_type: "{{ instance_type }}"
         image: "{{ ami_id }}"
         wait: yes
@@ -23,6 +23,9 @@
         instance_tags:
           Name: "CentOS 7 Instance {{ count.index + 1 }}"
       register: ec2_instances
+      provider:
+        access_key: "{{ ansible_env.AWS_ACCESS_KEY_ID }}"
+        secret_key: "{{ ansible_env.AWS_SECRET_ACCESS_KEY }}"
 
     - name: Add instances to host group
       add_host:
