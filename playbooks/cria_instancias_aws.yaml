@@ -5,7 +5,7 @@
   vars:
     instance_type: t3.xlarge
     ami_id: ami-0323c3dd2da7fb37d # CentOS 7 x86_64
-    region: us-west-2
+    region: us-east-2
     key_name: my_key_pair
     security_group: my_security_group
     count: 6
