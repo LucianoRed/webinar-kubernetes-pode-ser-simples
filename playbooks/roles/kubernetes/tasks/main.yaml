@@ -1,0 +1,127 @@
+    - name: Install required packages
+      yum:
+        name:
+          - yum-utils
+          - device-mapper-persistent-data
+          - lvm2
+        state: present
+
+    - name: Add Docker CE repo
+      yum_repository:
+        name: docker-ce
+        description: Docker CE Stable - $basearch
+        baseurl: https://download.docker.com/linux/centos/7/$basearch/stable
+        gpgcheck: yes
+        gpgkey: https://download.docker.com/linux/centos/gpg
+        enabled: yes
+        priority: 3
+
+    - name: Install Docker CE
+      yum:
+        name: docker-ce
+        state: present
+
+    - name: Start and enable Docker
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add Kubernetes repo
+      yum_repository:
+        name: kubernetes
+        description: Kubernetes
+        baseurl: https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+        gpgcheck: yes
+        gpgkey: https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+        enabled: yes
+        priority: 2
+
+    - name: Install Kubernetes components
+      yum:
+        name:
+          - kubeadm-{{ k8s_version }}
+          - kubelet-{{ k8s_version }}
+          - kubectl-{{ k8s_version }}
+        state: present
+
+    - name: Initialize control plane
+      command: kubeadm init --pod-network-cidr=192.168.0.0/16 --apiserver-advertise-address={{ hostvars[inventory_hostname]['ansible_default_ipv4']['address'] }}
+      when: inventory_hostname in groups['control_plane'][0]
+      args:
+        creates: /etc/kubernetes/manifests/kube-apiserver.yaml
+
+    - name: Create .kube dir on /root
+      file:
+       name: "/root/.kube"
+       state: directory
+       owner: root
+      when: inventory_hostname in groups['control_plane']
+
+    - name: Copy /etc/kubernetes/admin.conf to .kube/config
+      copy:
+       src: /etc/kubernetes/admin.conf
+       dest: /root/.kube/config
+       owner: root
+       remote_src: yes
+      when: inventory_hostname in groups['control_plane']
+
+    - name: Create .kube dir on /home/centos
+      file:
+       name: "/home/centos/.kube"
+       state: directory
+       owner: centos
+      when: inventory_hostname in groups['control_plane']
+
+    - name: Copy /etc/kubernetes/admin.conf to .kube/config
+      copy:
+       src: /etc/kubernetes/admin.conf
+       dest: /home/centos/.kube/config
+       owner: centos
+       remote_src: yes
+      when: inventory_hostname in groups['control_plane']
+
+#    - name: Configure kubectl for centos user
+#      command: "mkdir -p /home/centos/.kube && cp /etc/kubernetes/admin.conf /home/centos/.kube/config && chown -R centos:centos /home/centos/.kube"
+#      when: inventory_hostname in groups['control_plane']
+#      become: true
+
+    - name: Install Calico
+      command: kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.25.1/manifests/calico.yaml
+      when: inventory_hostname in groups['control_plane']
+
+    - name: Install Nginx as Ingress Controller
+      command: kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v0.44.0/deploy/static/provider/cloud/deploy.yaml
+      when: inventory_hostname in groups['control_plane']
+
+    - name: Expose Nginx as Nodeport
+      command: kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v0.44.0/deploy/static/provider/baremetal/deploy.yaml
+      when: inventory_hostname in groups['control_plane']
+
+    - name: Generate join command
+      shell: kubeadm token create --print-join-command > /tmp/join_command.sh
+      register: join_command
+      when: inventory_hostname in groups['control_plane']
+
+    - name: Get join_command from master
+      fetch:
+       src: /tmp/join_command.sh
+       dest: /tmp/
+       flat: yes
+      when: inventory_hostname in groups['control_plane']
+
+    - name: Copy join command to worker nodes
+      copy:
+        src: /tmp/join_command.sh
+        dest: /tmp/join_command.sh
+        mode: 'u+x'
+      when: inventory_hostname in groups['workers']
+
+    - name: Join worker nodes to cluster
+      command: sh -c "/tmp/join_command.sh"
+      when: inventory_hostname in groups['workers']
+      become: yes
+
+    - name: Label worker nodes
+      shell: "for x in `kubectl get nodes | grep -v master | grep -v NAME | awk {'print $1'}`; do kubectl label node $x node-role.kubernetes.io/worker=worker; done"
+      when: inventory_hostname in groups['control_plane']
